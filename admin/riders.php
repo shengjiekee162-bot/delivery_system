@@ -175,6 +175,7 @@ $online_count = count(array_filter($riders, fn($r) => $r['is_online'] == 1));
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= htmlspecialchars($page_title) ?> - Courier Dispatch Portal</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f4f8; color: #1e293b; display: flex; flex-direction: column; min-height: 100vh; }
@@ -218,6 +219,7 @@ $online_count = count(array_filter($riders, fn($r) => $r['is_online'] == 1));
         .search-box { display: flex; align-items: center; gap: 8px; }
         .search-input { padding: 7px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; outline: none; width: 250px; }
         .search-input:focus { border-color: #0284c7; box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.15); }
+        .modal-content { position: relative; width: calc(100% - 32px); padding: 24px; border-radius: 16px; background: #fffdf8; box-shadow: 0 22px 50px rgba(20,55,48,.24); }.close-modal { position: absolute; top: 12px; right: 16px; color: #687d77; cursor: pointer; font-size: 24px; font-weight: 700; }.route-modal { max-width: 980px; }.route-map { height: 430px; border: 1px solid #d7ddd5; border-radius: 12px; margin: 12px 0; }.route-stops { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }.route-stop { padding: 7px 10px; border-radius: 9px; background: #eef7f1; color: #24554c; font-size: 12px; font-weight: 700; }.route-hours-select { padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 12px; color: #334155; }.btn-view-route { margin-right: 6px; border: 1px solid #bfe4d5; border-radius: 7px; padding: 5px 9px; background: #e5f7ef; color: #076856; cursor: pointer; font-size: 12px; font-weight: 700; }
         @media (max-width: 900px) { .form-grid { grid-template-columns: 1fr; } }
     </style>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap">
@@ -246,6 +248,10 @@ $online_count = count(array_filter($riders, fn($r) => $r['is_online'] == 1));
             <a href="parcels.php" class="sidebar-item">
                 <i class="fa-solid fa-box"></i>
                 <span>Manage Parcels</span>
+            </a>
+            <a href="completed_orders.php" class="sidebar-item">
+                <i class="fa-solid fa-circle-check"></i>
+                <span>Completed Orders</span>
             </a>
             <a href="riders.php" class="sidebar-item active">
                 <i class="fa-solid fa-motorcycle"></i>
@@ -349,6 +355,7 @@ $online_count = count(array_filter($riders, fn($r) => $r['is_online'] == 1));
                                         <?php endif; ?>
                                     </td>
                                     <td>
+                                        <button type="button" class="btn-view-route" onclick='openRiderRoute(<?= json_encode(['id' => $r['rider_id'], 'name' => $r['name']], JSON_HEX_APOS | JSON_HEX_QUOT) ?>)'><i class="fa-solid fa-road"></i> View Traveled Route</button>
                                         <form method="POST" style="display:inline;" onsubmit="return confirm('Permanently remove rider <?= htmlspecialchars($r['name']) ?> from the database?');">
                                             <input type="hidden" name="action" value="delete_rider">
                                             <input type="hidden" name="rider_id" value="<?= $r['rider_id'] ?>">
@@ -367,8 +374,181 @@ $online_count = count(array_filter($riders, fn($r) => $r['is_online'] == 1));
         </main>
     </div>
 
+    <div id="riderRouteModal" class="modal" style="display:none; position:fixed; inset:0; z-index:2000; background:rgba(15,35,30,.5); align-items:center; justify-content:center;">
+        <div class="modal-content route-modal" style="max-height:92vh; overflow:auto;">
+            <span class="close-modal" onclick="closeRiderRoute()">&times;</span>
+            <h2 id="route-modal-title" class="card-title">Rider Traveled Route</h2>
+            <p id="route-modal-status" class="subtext">Loading GPS trail...</p>
+            <div id="route-stops" class="route-stops">
+                <label for="route-hours-select" style="font-size:12px;font-weight:600;color:#475569;">Time range:</label>
+                <select id="route-hours-select" class="route-hours-select">
+                    <option value="1">Last 1 hour</option>
+                    <option value="6">Last 6 hours</option>
+                    <option value="24" selected>Last 24 hours</option>
+                    <option value="72">Last 3 days</option>
+                </select>
+            </div>
+            <div id="rider-route-map" class="route-map"></div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <!-- Instant Live Search Script -->
     <script>
+        let riderRouteMap = null;
+        let riderRouteLayers = [];
+        let activeRiderRoute = null;
+
+        function clearRiderRoute() {
+            if (!riderRouteMap) return;
+            riderRouteLayers.forEach(layer => riderRouteMap.removeLayer(layer));
+            riderRouteLayers = [];
+        }
+
+        function sampleRoutePoints(points, maxSegments = 24) {
+            if (points.length <= maxSegments + 1) return points;
+
+            const sampled = [points[0]];
+            const step = (points.length - 1) / maxSegments;
+            for (let index = 1; index < maxSegments; index++) {
+                sampled.push(points[Math.round(index * step)]);
+            }
+            sampled.push(points[points.length - 1]);
+            return sampled;
+        }
+
+        async function buildRoadRoute(points) {
+            const sampledPoints = sampleRoutePoints(points);
+            const coordinates = [];
+            let roadSegments = 0;
+
+            for (let index = 0; index < sampledPoints.length - 1; index++) {
+                const start = sampledPoints[index];
+                const end = sampledPoints[index + 1];
+                let segmentCoordinates = [start, end];
+
+                try {
+                    const params = new URLSearchParams({
+                        start_lat: start[0],
+                        start_lng: start[1],
+                        end_lat: end[0],
+                        end_lng: end[1]
+                    });
+                    const response = await fetch(`../api/get_route.php?${params.toString()}`, {
+                        credentials: 'same-origin'
+                    });
+                    const result = await response.json();
+                    if (result.status === 'success' && Array.isArray(result.data?.coordinates) && result.data.coordinates.length > 1) {
+                        segmentCoordinates = result.data.coordinates;
+                        roadSegments++;
+                    }
+                } catch (error) {
+                    console.warn('Road route segment lookup failed:', error);
+                }
+
+                if (coordinates.length && segmentCoordinates.length) {
+                    segmentCoordinates.shift();
+                }
+                coordinates.push(...segmentCoordinates);
+            }
+
+            return { coordinates, roadSegments, totalSegments: sampledPoints.length - 1 };
+        }
+
+        async function loadRiderTraveledRoute() {
+            if (!activeRiderRoute || !riderRouteMap) return;
+
+            const hours = document.getElementById('route-hours-select').value;
+            document.getElementById('route-modal-status').textContent = 'Loading GPS trail and matching it to roads...';
+            clearRiderRoute();
+
+            try {
+                const params = new URLSearchParams({
+                    rider_id: activeRiderRoute.id,
+                    hours: hours
+                });
+                const response = await fetch(`../api/get_rider_route.php?${params.toString()}`, {
+                    credentials: 'same-origin'
+                });
+                const payload = await response.json();
+
+                if (payload.status !== 'success') {
+                    throw new Error(payload.message || 'Unable to load traveled route.');
+                }
+
+                const route = Array.isArray(payload.data) ? payload.data[0] : null;
+                if (!route || !Array.isArray(route.points) || route.points.length < 2) {
+                    document.getElementById('route-modal-status').textContent =
+                        'No GPS trail recorded for this rider in the selected time range. Ask the rider to keep the portal open with location enabled.';
+                    riderRouteMap.setView([5.3778, 100.3996], 11);
+                    return;
+                }
+
+                const gpsPoints = route.points.map(point => [point.lat, point.lng]);
+                const roadRoute = await buildRoadRoute(gpsPoints);
+                const routeCoordinates = roadRoute.coordinates.length > 1 ? roadRoute.coordinates : gpsPoints;
+                const trail = L.polyline(routeCoordinates, {
+                    color: '#f97316',
+                    weight: 5,
+                    opacity: 0.88,
+                    lineJoin: 'round'
+                }).addTo(riderRouteMap);
+                riderRouteLayers.push(trail);
+
+                const startMarker = L.circleMarker(gpsPoints[0], {
+                    radius: 7,
+                    color: '#ffffff',
+                    weight: 2,
+                    fillColor: '#22c55e',
+                    fillOpacity: 1
+                }).addTo(riderRouteMap).bindPopup(`<b>Route start</b><br>${route.started_at || 'N/A'}`);
+                riderRouteLayers.push(startMarker);
+
+                const endMarker = L.circleMarker(gpsPoints[gpsPoints.length - 1], {
+                    radius: 7,
+                    color: '#ffffff',
+                    weight: 2,
+                    fillColor: '#0284c7',
+                    fillOpacity: 1
+                }).addTo(riderRouteMap).bindPopup(`<b>Latest position</b><br>${route.ended_at || 'N/A'}`);
+                riderRouteLayers.push(endMarker);
+
+                riderRouteMap.fitBounds(trail.getBounds(), { padding: [40, 40] });
+                document.getElementById('route-modal-status').textContent =
+                    `${route.point_count} GPS points · road route matched for ${roadRoute.roadSegments}/${roadRoute.totalSegments} segments · ${route.started_at || 'N/A'} → ${route.ended_at || 'N/A'}`;
+            } catch (error) {
+                document.getElementById('route-modal-status').textContent =
+                    error.message || 'Unable to load traveled route.';
+            }
+        }
+
+        async function openRiderRoute(rider) {
+            activeRiderRoute = rider;
+            document.getElementById('riderRouteModal').style.display = 'flex';
+            document.getElementById('route-modal-title').textContent = `${rider.name} — Traveled Route`;
+            document.getElementById('route-modal-status').textContent = 'Loading GPS trail and matching it to roads...';
+
+            if (!riderRouteMap) {
+                riderRouteMap = L.map('rider-route-map');
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    maxZoom: 19,
+                    attribution: '© OpenStreetMap contributors'
+                }).addTo(riderRouteMap);
+            }
+
+            setTimeout(async () => {
+                riderRouteMap.invalidateSize();
+                await loadRiderTraveledRoute();
+            }, 150);
+        }
+
+        function closeRiderRoute() {
+            document.getElementById('riderRouteModal').style.display = 'none';
+            activeRiderRoute = null;
+        }
+
+        document.getElementById('route-hours-select').addEventListener('change', loadRiderTraveledRoute);
+
         document.getElementById('liveSearchInput').addEventListener('input', function() {
             const searchTerm = this.value.toLowerCase().trim();
             const rows = document.querySelectorAll('#ridersTable tbody tr.rider-row');

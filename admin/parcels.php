@@ -188,7 +188,7 @@ $sql = "
     LEFT JOIN riders r ON p.assigned_rider_id = r.id 
     LEFT JOIN users u ON r.user_id = u.id 
     LEFT JOIN delivery_photos dp ON p.id = dp.parcel_id
-    WHERE p.deleted_at IS NULL
+    WHERE p.deleted_at IS NULL AND p.status <> 'delivered'
 ";
 
 $params = [];
@@ -769,6 +769,10 @@ $parcels = $stmt->fetchAll();
                 <i class="fa-solid fa-box"></i>
                 <span>Manage Parcels</span>
             </a>
+            <a href="completed_orders.php" class="sidebar-item">
+                <i class="fa-solid fa-circle-check"></i>
+                <span>Completed Orders</span>
+            </a>
             <a href="riders.php" class="sidebar-item">
                 <i class="fa-solid fa-motorcycle"></i>
                 <span>Manage Riders</span>
@@ -974,6 +978,7 @@ $parcels = $stmt->fetchAll();
             <span class="close-modal" onclick="closeAddressPicker()">&times;</span>
             <h2 style="margin-bottom:6px; font-size:1.25rem;"><i class="fa-solid fa-location-dot"></i> Confirm Delivery Location</h2>
             <p id="address-picker-status" style="font-size:13px; color:#64748b; margin-bottom:10px;">Searching address...</p>
+            <button type="button" class="btn-locate" onclick="locateCurrentRoad()"><i class="fa-solid fa-crosshairs"></i> Locate Current Road</button>
             <div id="address-picker-results" class="address-picker-results"></div>
             <div id="address-picker-map"></div>
             <div style="text-align:right; margin-top:12px;"><button type="button" class="btn-primary" onclick="confirmAddressLocation()"><i class="fa-solid fa-check"></i> Use This Location</button></div>
@@ -1070,6 +1075,44 @@ $parcels = $stmt->fetchAll();
             document.querySelectorAll('.address-picker-result').forEach((button, index) => button.classList.toggle('selected', index === location.index));
         }
 
+        async function locateCurrentRoad() {
+            const status = document.getElementById('address-picker-status');
+            if (!navigator.geolocation) {
+                status.textContent = 'This browser does not support GPS location. Please pin the point on the map.';
+                return;
+            }
+
+            status.textContent = 'Getting your high-accuracy GPS location...';
+            navigator.geolocation.getCurrentPosition(async position => {
+                const lat = position.coords.latitude;
+                const lng = position.coords.longitude;
+                const accuracy = Math.round(position.coords.accuracy || 0);
+                showAddressPickerLocation({ name: 'Current location', address: '', lat, lng, index: -1 });
+                status.textContent = `Location found (accuracy about ${accuracy} m). Identifying current road...`;
+
+                try {
+                    const response = await fetch(`../api/reverse_geocode.php?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`);
+                    const payload = await response.json();
+                    if (payload.status !== 'success') throw new Error(payload.message || 'Unable to identify road');
+                    showAddressPickerLocation({ ...payload.data, index: -1 });
+                    status.textContent = payload.data.road
+                        ? `Current road: ${payload.data.road} (GPS accuracy about ${accuracy} m).`
+                        : `Current location found (GPS accuracy about ${accuracy} m).`;
+                } catch (error) {
+                    status.textContent = `Current location found (GPS accuracy about ${accuracy} m), but the road name could not be identified. You can still use this point.`;
+                }
+            }, error => {
+                const message = error.code === error.PERMISSION_DENIED
+                    ? 'Location permission was denied. Allow location access, then try again.'
+                    : 'Unable to get your location. Check GPS/network and try again.';
+                status.textContent = message;
+            }, {
+                enableHighAccuracy: true,
+                timeout: 15000,
+                maximumAge: 0,
+            });
+        }
+
         async function openAddressPicker(mode) {
             addressPickerMode = mode;
             const address = addressPickerField('delivery_address').value.trim();
@@ -1090,7 +1133,18 @@ $parcels = $stmt->fetchAll();
             setTimeout(() => addressPickerMap.invalidateSize(), 180);
 
             try {
-                const response = await fetch(`../api/search_address.php?q=${encodeURIComponent(address)}`);
+                let currentLocation = null;
+                if (navigator.geolocation) {
+                    try {
+                        currentLocation = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject, {
+                            enableHighAccuracy: true, timeout: 8000, maximumAge: 30000
+                        }));
+                    } catch (error) { /* Search still works without location permission. */ }
+                }
+                const nearby = currentLocation
+                    ? `&lat=${encodeURIComponent(currentLocation.coords.latitude)}&lng=${encodeURIComponent(currentLocation.coords.longitude)}`
+                    : '';
+                const response = await fetch(`../api/search_address.php?q=${encodeURIComponent(address)}${nearby}`);
                 const payload = await response.json();
                 const results = payload.status === 'success' ? payload.data : [];
                 if (!results.length) {
@@ -1247,38 +1301,9 @@ $parcels = $stmt->fetchAll();
 
                     bounds.extend([destLat, destLng]);
 
-                    const routeParams = new URLSearchParams({
-                        start_lat: riderLat,
-                        start_lng: riderLng,
-                        end_lat: destLat,
-                        end_lng: destLng
-                    });
-
-                    let routeCoords = [[riderLat, riderLng], [destLat, destLng]];
-                    let statusText = `Rider located. Straight-line distance to recipient.`;
-
-                    try {
-                        const routeRes = await fetch(`../api/get_route.php?${routeParams.toString()}`, {
-                            credentials: 'same-origin'
-                        });
-                        const routeData = await routeRes.json();
-                        if (routeData.status === 'success' && routeData.data && routeData.data.coordinates?.length > 1) {
-                            routeCoords = routeData.data.coordinates;
-                            statusText = `Rider located. Route: ${routeData.data.distance_km} km (~${routeData.data.duration_min} mins)`;
-                        }
-                    } catch (error) {
-                        console.warn('Route lookup failed:', error);
-                    }
-
-                    locateLayers.route = L.polyline(routeCoords, {
-                        color: '#0284c7',
-                        weight: 5,
-                        opacity: 0.85
-                    }).addTo(locateMap);
-
-                    document.getElementById('locate-map-status').textContent = statusText;
+                    document.getElementById('locate-map-status').textContent = 'Rider and recipient locations shown.';
                 } else {
-                    document.getElementById('locate-map-status').textContent = 'Rider located. No delivery destination coordinates for this parcel.';
+                    document.getElementById('locate-map-status').textContent = 'Rider location shown. No recipient location is saved for this parcel.';
                 }
 
                 locateMap.fitBounds(bounds, { padding: [40, 40] });

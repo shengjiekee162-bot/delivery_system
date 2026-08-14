@@ -14,7 +14,6 @@ require_role('rider');
 
 $db = get_db_connection();
 $user_id = $_SESSION['user_id'] ?? null;
-mark_rider_online($db, (string)$user_id);
 
 $error_message = '';
 $success_message = '';
@@ -418,6 +417,5 @@ $page_title = "Rider Profile Management";
         </div>
     </div>
 
-    <?php require __DIR__ . '/../includes/rider_presence_script.php'; ?>
 </body>
 </html>

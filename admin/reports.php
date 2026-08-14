@@ -470,6 +470,10 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
                 <i class="fa-solid fa-box"></i>
                 <span>Manage Parcels</span>
             </a>
+            <a href="completed_orders.php" class="sidebar-item">
+                <i class="fa-solid fa-circle-check"></i>
+                <span>Completed Orders</span>
+            </a>
             <a href="riders.php" class="sidebar-item">
                 <i class="fa-solid fa-motorcycle"></i>
                 <span>Manage Riders</span>

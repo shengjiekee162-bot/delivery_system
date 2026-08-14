@@ -398,6 +398,7 @@ $online_count = $db->query("SELECT COUNT(*) FROM riders WHERE is_online = 1 AND 
         <aside class="sidebar">
             <a href="dashboard.php" class="sidebar-item active"><i class="fa-solid fa-map-location-dot"></i><span>Live Radar</span></a>
             <a href="parcels.php" class="sidebar-item"><i class="fa-solid fa-box"></i><span>Manage Parcels</span></a>
+            <a href="completed_orders.php" class="sidebar-item"><i class="fa-solid fa-circle-check"></i><span>Completed Orders</span></a>
             <a href="riders.php" class="sidebar-item"><i class="fa-solid fa-motorcycle"></i><span>Manage Riders</span></a>
             <a href="audit_logs.php" class="sidebar-item"><i class="fa-solid fa-clock-rotate-left"></i><span>Audit Logs</span></a>
         </aside>

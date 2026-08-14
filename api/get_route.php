@@ -99,7 +99,7 @@ function decode_polyline(string $encoded): array
 function fetch_osrm_route(float $start_lat, float $start_lng, float $end_lat, float $end_lng): array
 {
     $url = sprintf(
-        'https://router.project-osrm.org/route/v1/driving/%F,%F;%F,%F?overview=full&geometries=polyline&steps=false',
+        'https://router.project-osrm.org/route/v1/driving/%F,%F;%F,%F?overview=full&geometries=polyline&steps=false&alternatives=true',
         $start_lng,
         $start_lat,
         $end_lng,
@@ -129,18 +129,28 @@ function fetch_osrm_route(float $start_lat, float $start_lng, float $end_lat, fl
         throw new RuntimeException('No driving route found between these points.');
     }
 
-    $route = $data['routes'][0];
-    $coordinates = [];
+    // OSRM returns the preferred route first, followed by distinct alternatives
+    // when they are available. Keep the original top-level fields for existing
+    // callers, while exposing every option to screens that support route choice.
+    $routes = [];
+    foreach (array_slice($data['routes'], 0, 3) as $route) {
+        $coordinates = !empty($route['geometry']) ? decode_polyline($route['geometry']) : [];
+        if (count($coordinates) < 2) {
+            continue;
+        }
 
-    if (!empty($route['geometry'])) {
-        $coordinates = decode_polyline($route['geometry']);
+        $routes[] = [
+            'distance_km'  => round(((float)$route['distance']) / 1000, 2),
+            'duration_min' => max(1, (int)round(((float)$route['duration']) / 60)),
+            'coordinates'  => $coordinates,
+        ];
     }
 
-    return [
-        'distance_km'  => round(((float)$route['distance']) / 1000, 2),
-        'duration_min' => max(1, (int)round(((float)$route['duration']) / 60)),
-        'coordinates'  => $coordinates,
-    ];
+    if (empty($routes)) {
+        throw new RuntimeException('No usable driving route found between these points.');
+    }
+
+    return $routes[0] + ['routes' => $routes];
 }
 
 try {

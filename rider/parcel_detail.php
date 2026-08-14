@@ -7,7 +7,6 @@ require_role('rider');
 $db = get_db_connection();
 $user_id = (string)($_SESSION['user_id'] ?? '');
 $rider = ensure_rider_profile($db, $user_id);
-mark_rider_online($db, $user_id);
 
 $parcel_id = sanitize($_GET['id'] ?? '');
 
@@ -97,6 +96,5 @@ if (!$parcel) {
             });
         });
     </script>
-    <?php require __DIR__ . '/../includes/rider_presence_script.php'; ?>
 </body>
 </html>

@@ -14,7 +14,6 @@ require_role('rider');
 
 $db = get_db_connection();
 $user_id = $_SESSION['user_id'] ?? null;
-mark_rider_online($db, (string)$user_id);
 
 $error_message = '';
 $success_message = '';
@@ -63,7 +62,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'update_location') {
 
             $stmtOnline = $db->prepare("
                 UPDATE riders
-                SET is_online = 1, last_active_at = NOW()
+                SET last_active_at = NOW()
                 WHERE id = :rider_id AND deleted_at IS NULL
             ");
             $stmtOnline->execute([':rider_id' => $rider_id]);
@@ -96,6 +95,23 @@ if ($user_id) {
 // Handle Form Submissions: Toggle Status & Parcel Updates
 // -------------------------------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (isset($_POST['action']) && $_POST['action'] === 'update_rider_status') {
+        $new_rider_status = $_POST['rider_status'] ?? '';
+
+        if (in_array($new_rider_status, ['online', 'offline'], true)) {
+            try {
+                set_rider_online_status($db, (string)$user_id, $new_rider_status === 'online' ? 1 : 0);
+                $success_message = $new_rider_status === 'online'
+                    ? 'You are now online and available for delivery assignments.'
+                    : 'You are now offline. GPS tracking and the rider radar are paused.';
+            } catch (Exception $e) {
+                $error_message = 'Unable to update rider status: ' . $e->getMessage();
+            }
+        } else {
+            $error_message = 'Invalid rider status selected.';
+        }
+    }
+
     // 1. Update Parcel Delivery Status (With Camera Capture & Proof Upload to `delivery_photos`)
     if (isset($_POST['action']) && $_POST['action'] === 'update_parcel_status') {
         $parcel_id  = $_POST['parcel_id'] ?? '';
@@ -104,31 +120,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if (in_array($new_status, $allowed) && !empty($parcel_id)) {
             try {
-                $proof_file_path = null;
+                $proof_file_paths = [];
 
-                // Handle Camera Capture / File Upload for Delivery Proof when marked as delivered
-                if ($new_status === 'delivered' && isset($_FILES['proof_image']) && $_FILES['proof_image']['error'] === UPLOAD_ERR_OK) {
-                    $fileTmpPath   = $_FILES['proof_image']['tmp_name'];
-                    $fileName      = $_FILES['proof_image']['name'];
-                    $fileExtension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
-                    
+                // A delivery can have several proof photos (up to five images, 8 MB each).
+                if ($new_status === 'delivered') {
+                    $uploads = $_FILES['proof_images'] ?? null;
+                    if (!$uploads || !is_array($uploads['name'] ?? null)) {
+                        throw new Exception('Please upload at least one delivery proof photo.');
+                    }
+
+                    $fileCount = count($uploads['name']);
+                    if ($fileCount < 1 || $fileCount > 5) {
+                        throw new Exception('Please upload between 1 and 5 delivery proof photos.');
+                    }
+
+                    $uploadFileDir = __DIR__ . '/../uploads/delivery_proofs/';
+                    if (!is_dir($uploadFileDir) && !mkdir($uploadFileDir, 0755, true) && !is_dir($uploadFileDir)) {
+                        throw new Exception('Unable to create the delivery proof upload folder.');
+                    }
+
                     $allowedExtensions = ['jpg', 'jpeg', 'png', 'webp'];
-                    if (in_array($fileExtension, $allowedExtensions)) {
-                        $newFileName = 'proof_' . $parcel_id . '_' . time() . '.' . $fileExtension;
-                        $uploadFileDir = __DIR__ . '/../uploads/delivery_proofs/';
-                        
-                        if (!is_dir($uploadFileDir)) {
-                            mkdir($uploadFileDir, 0755, true);
+                    foreach ($uploads['name'] as $index => $fileName) {
+                        $uploadError = $uploads['error'][$index] ?? UPLOAD_ERR_NO_FILE;
+                        $fileTmpPath = $uploads['tmp_name'][$index] ?? '';
+                        $fileSize = (int)($uploads['size'][$index] ?? 0);
+                        $fileExtension = strtolower(pathinfo((string)$fileName, PATHINFO_EXTENSION));
+
+                        if ($uploadError !== UPLOAD_ERR_OK) {
+                            throw new Exception('One of the delivery proof photos could not be uploaded.');
                         }
-                        
-                        $dest_path = $uploadFileDir . $newFileName;
-                        if (move_uploaded_file($fileTmpPath, $dest_path)) {
-                            $proof_file_path = 'uploads/delivery_proofs/' . $newFileName;
-                        } else {
-                            throw new Exception("Error saving the captured delivery proof photo.");
+                        if (!in_array($fileExtension, $allowedExtensions, true) || $fileSize < 1 || $fileSize > 8 * 1024 * 1024) {
+                            throw new Exception('Each proof photo must be JPG, PNG, or WEBP and no larger than 8 MB.');
                         }
-                    } else {
-                        throw new Exception("Invalid image format. Allowed formats: JPG, PNG, WEBP.");
+
+                        $newFileName = 'proof_' . $parcel_id . '_' . bin2hex(random_bytes(8)) . '.' . $fileExtension;
+                        if (!move_uploaded_file($fileTmpPath, $uploadFileDir . $newFileName)) {
+                            throw new Exception('Error saving one of the delivery proof photos.');
+                        }
+                        $proof_file_paths[] = 'uploads/delivery_proofs/' . $newFileName;
                     }
                 }
 
@@ -140,17 +169,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ");
                 $stmtUpdate->execute([':status' => $new_status, ':parcel_id' => $parcel_id]);
 
-                // Insert into dedicated delivery_photos table if image provided
-                if ($proof_file_path) {
+                // Insert every proof image into the dedicated delivery_photos table.
+                if ($proof_file_paths) {
                     $stmtPhoto = $db->prepare("
                         INSERT INTO delivery_photos (id, parcel_id, file_path, uploaded_at)
                         VALUES (:id, :parcel_id, :file_path, NOW())
                     ");
-                    $stmtPhoto->execute([
-                        ':id'        => generate_uuid(),
-                        ':parcel_id' => $parcel_id,
-                        ':file_path' => $proof_file_path
-                    ]);
+                    foreach ($proof_file_paths as $proof_file_path) {
+                        $stmtPhoto->execute([
+                            ':id'        => generate_uuid(),
+                            ':parcel_id' => $parcel_id,
+                            ':file_path' => $proof_file_path
+                        ]);
+                    }
                 }
 
                 // Record status history
@@ -163,10 +194,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':parcel_id' => $parcel_id,
                     ':status' => $new_status,
                     ':user_id' => $user_id,
-                    ':remarks' => $proof_file_path ? 'Delivered with camera photo proof stored' : 'Updated via Rider Dashboard'
+                    ':remarks' => $proof_file_paths
+                        ? 'Delivered with ' . count($proof_file_paths) . ' proof photo(s) stored'
+                        : 'Updated via Rider Dashboard'
                 ]);
 
                 $success_message = "Parcel status updated successfully!";
+
+                if ($new_status === 'delivered') {
+                    header('Location: completed_orders.php?completed=1');
+                    exit;
+                }
             } catch (Exception $e) {
                 $error_message = "Failed to update parcel: " . $e->getMessage();
             }
@@ -265,6 +303,7 @@ $_SESSION['profile_image'] = $raw_db_image;
 // Fetch Active Assigned Parcels
 // -------------------------------------------------------------
 $assigned_parcels = [];
+$all_assigned_parcels = [];
 if ($rider && !empty($rider['rider_id'])) {
     try {
         $sqlParcels = "
@@ -280,84 +319,25 @@ if ($rider && !empty($rider['rider_id'])) {
         $stmtParcels = $db->prepare($sqlParcels);
         $stmtParcels->execute([':rider_id' => $rider['rider_id']]);
         $assigned_parcels = $stmtParcels->fetchAll(PDO::FETCH_ASSOC);
+
+        $stmtAllParcels = $db->prepare("
+            SELECT id, tracking_number, recipient_name, recipient_phone,
+                   delivery_address, status, created_at, updated_at
+            FROM parcels
+            WHERE assigned_rider_id = :rider_id
+              AND deleted_at IS NULL
+              AND status <> 'delivered'
+            ORDER BY updated_at DESC, created_at DESC
+        ");
+        $stmtAllParcels->execute([':rider_id' => $rider['rider_id']]);
+        $all_assigned_parcels = $stmtAllParcels->fetchAll(PDO::FETCH_ASSOC);
     } catch (Exception $e) {
         $error_message = "Error fetching parcels: " . $e->getMessage();
     }
 }
 
-$nav_parcel = null;
-foreach ($assigned_parcels as $parcel_item) {
-    if ($parcel_item['status'] === 'out_for_delivery') {
-        $nav_parcel = $parcel_item;
-        break;
-    }
-}
-if (!$nav_parcel && !empty($assigned_parcels)) {
-    $nav_parcel = $assigned_parcels[0];
-}
-
-$nav_destination = null;
 $last_rider_gps = null;
-
-if ($nav_parcel && $rider && !empty($rider['rider_id'])) {
-    require_once __DIR__ . '/../includes/http_client.php';
-    require_once __DIR__ . '/../config/services.php';
-
-    if (!function_exists('rider_geocode_address')) {
-        function rider_geocode_address(string $address): array
-        {
-            $address = normalize_address_query($address);
-            if ($address === '') {
-                return [null, null];
-            }
-
-            $region = detect_address_region($address);
-            $focus = resolve_geocode_focus($address, null, null);
-
-            $results = ors_geocode_malaysia(
-                $address,
-                $focus['lat'],
-                $focus['lng'],
-                5,
-                $region
-            );
-
-            if ($region) {
-                $results = filter_results_by_address_region($results, $region);
-            }
-
-            if (!empty($results)) {
-                return [(float)$results[0]['lat'], (float)$results[0]['lng']];
-            }
-
-            foreach (build_address_search_variants($address) as $variant) {
-                $results = ors_geocode_malaysia($variant, $focus['lat'], $focus['lng'], 3, $region);
-                if ($region) {
-                    $results = filter_results_by_address_region($results, $region);
-                }
-                if (!empty($results)) {
-                    return [(float)$results[0]['lat'], (float)$results[0]['lng']];
-                }
-            }
-
-            return [null, null];
-        }
-    }
-
-    $dest_lat = isset($nav_parcel['latitude']) ? (float)$nav_parcel['latitude'] : 0.0;
-    $dest_lng = isset($nav_parcel['longitude']) ? (float)$nav_parcel['longitude'] : 0.0;
-
-    if ($dest_lat < 0.8 || $dest_lat > 7.5 || $dest_lng < 98.5 || $dest_lng > 119.5) {
-        list($dest_lat, $dest_lng) = rider_geocode_address((string)$nav_parcel['delivery_address']);
-    }
-
-    if ($dest_lat !== null && $dest_lng !== null && $dest_lat >= 0.8 && $dest_lat <= 7.5 && $dest_lng >= 98.5 && $dest_lng <= 119.5) {
-        $nav_destination = [
-            'lat' => $dest_lat,
-            'lng' => $dest_lng,
-        ];
-    }
-
+if ($rider && !empty($rider['rider_id']) && !empty($assigned_parcels)) {
     try {
         $stmtLastGps = $db->prepare("
             SELECT latitude, longitude
@@ -380,9 +360,11 @@ if ($nav_parcel && $rider && !empty($rider['rider_id'])) {
             }
         }
     } catch (Exception $e) {
-        // Non-fatal: map can still render destination-only view.
+        // Non-fatal: planned route can still load from delivery plan API.
     }
 }
+
+$show_delivery_plan = !empty($assigned_parcels) && $rider && !empty($rider['rider_id']);
 
 $page_title = "Rider Delivery Portal";
 ?>
@@ -395,7 +377,7 @@ $page_title = "Rider Delivery Portal";
 
     <!-- FontAwesome CSS -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
-    <?php if ($nav_parcel): ?>
+    <?php if ($show_delivery_plan): ?>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <?php endif; ?>
 
@@ -438,17 +420,37 @@ $page_title = "Rider Delivery Portal";
         .btn-start { background-color: #3b82f6; }
         .btn-deliver { background-color: #22c55e; }
         .btn-fail { background-color: #ef4444; }
+        .address-route-trigger { color: #0369a1; text-decoration: underline; text-decoration-style: dotted; cursor: pointer; font: inherit; font-weight: 600; border: 0; background: transparent; padding: 0; text-align: left; }
+        .address-route-trigger:hover { color: #075985; }
 
         /* Modal for Camera/Photo Proof */
         .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; z-index: 2000; padding: 16px; }
         .modal-content { background: #fff; padding: 20px; border-radius: 12px; max-width: 400px; width: 100%; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+        .modal-content.route-modal-content { max-width: 900px; }
         .modal-header { font-size: 1.1rem; font-weight: 700; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
         .close-modal { background: none; border: none; font-size: 1.2rem; cursor: pointer; color: #64748b; }
 
-        #delivery-map { width: 100%; height: 320px; border-radius: 10px; border: 1px solid #cbd5e1; margin-top: 12px; }
+        #delivery-map { width: 100%; height: 360px; border-radius: 10px; border: 1px solid #cbd5e1; margin-top: 12px; }
+        #parcel-route-map { width: 100%; height: 420px; border-radius: 10px; border: 1px solid #cbd5e1; margin-top: 12px; }
+        .route-options { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+        .route-option { border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: #334155; padding: 8px 10px; cursor: pointer; font: inherit; font-size: 12px; text-align: left; }
+        .route-option:hover, .route-option.is-active { border-color: #0284c7; background: #e0f2fe; color: #075985; }
         .map-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: #475569; }
         .map-legend span { display: inline-flex; align-items: center; gap: 6px; }
         .map-legend i { width: 18px; height: 4px; border-radius: 999px; display: inline-block; }
+        .plan-stops { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+        .plan-stop-chip { padding: 6px 10px; border-radius: 999px; background: #e0f2fe; color: #0369a1; font-size: 12px; font-weight: 700; }
+        .order-status-list { display: grid; gap: 10px; }
+        .order-status-item { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 14px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; }
+        .order-status-meta { min-width: 0; }
+        .order-status-meta strong { color: #0284c7; }
+        .order-status-meta p { margin-top: 4px; color: #64748b; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .parcel-status { display: inline-flex; flex-shrink: 0; padding: 5px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+        .parcel-status-pending { background: #fef3c7; color: #92400e; }
+        .parcel-status-out_for_delivery { background: #dbeafe; color: #1d4ed8; }
+        .parcel-status-delivered { background: #dcfce7; color: #15803d; }
+        .parcel-status-failed, .parcel-status-failed_delivery { background: #fee2e2; color: #b91c1c; }
+        @media (max-width: 560px) { .order-status-item { align-items: flex-start; flex-direction: column; gap: 8px; } }
     </style>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap">
     <link rel="stylesheet" href="../assets/css/portal-theme.css">
@@ -461,6 +463,7 @@ $page_title = "Rider Delivery Portal";
             <span>Rider Delivery Portal</span>
         </a>
         <div style="display:flex; align-items:center; gap: 16px;">
+            <a href="completed_orders.php" class="user-profile-menu"><i class="fa-solid fa-circle-check"></i><span>Completed Orders</span></a>
             <a href="profile.php" class="user-profile-menu">
                 <img src="<?= sanitize($profile_pic) ?>" 
                      alt="<?= sanitize($rider_display_name) ?>" 
@@ -498,26 +501,37 @@ $page_title = "Rider Delivery Portal";
             <div class="status-box">
                 <div>
                     <p style="font-size: 14px; font-weight: 600;">Vehicle Number: <?= sanitize($rider['vehicle_number'] ?? 'N/A') ?></p>
-                    <p style="font-size: 13px; color: #64748b;">You are shown as online while the rider portal is open. Closing the page or logging out will set you offline.</p>
+                    <p style="font-size: 13px; color: #64748b;">Choose whether you are available for delivery assignments. Offline riders are hidden from the live rider radar.</p>
                 </div>
+                <form method="POST" action="dashboard.php">
+                    <input type="hidden" name="action" value="update_rider_status">
+                    <?php if (($rider['is_online'] ?? 0) == 1): ?>
+                        <input type="hidden" name="rider_status" value="offline">
+                        <button type="submit" class="btn-toggle"><i class="fa-solid fa-toggle-off"></i> Go Offline</button>
+                    <?php else: ?>
+                        <input type="hidden" name="rider_status" value="online">
+                        <button type="submit" class="btn-toggle"><i class="fa-solid fa-toggle-on"></i> Go Online</button>
+                    <?php endif; ?>
+                </form>
             </div>
         </div>
 
-        <?php if ($nav_parcel): ?>
+        <?php if ($show_delivery_plan): ?>
         <div class="card">
             <div class="card-header">
-                <h2 class="card-title"><i class="fa-solid fa-route"></i> Delivery Navigation</h2>
+                <h2 class="card-title"><i class="fa-solid fa-route"></i> Planned Delivery Route</h2>
             </div>
             <p style="font-size: 13px; color: #475569; margin-bottom: 8px;">
-                <strong><?= sanitize($nav_parcel['tracking_number']) ?></strong> → <?= sanitize($nav_parcel['delivery_address']) ?>
+                Suggested stop order based on your current location and active parcels.
             </p>
+            <div id="plan-stops" class="plan-stops"></div>
             <div id="delivery-map"></div>
             <div class="map-legend">
-                <span><i style="background:#0284c7;"></i> Planned route</span>
+                <span><i style="background:#0284c7;"></i> Planned road route</span>
                 <span><i style="background:#22c55e;"></i> Your position</span>
-                <span><i style="background:#ef4444;"></i> Recipient</span>
+                <span><i style="background:#ef4444;"></i> Delivery stops</span>
             </div>
-            <p id="route-status-text" style="font-size: 13px; color: #64748b; margin-top: 10px;">Waiting for GPS...</p>
+            <p id="route-status-text" style="font-size: 13px; color: #64748b; margin-top: 10px;">Loading planned route...</p>
         </div>
         <?php endif; ?>
 
@@ -539,7 +553,16 @@ $page_title = "Rider Delivery Portal";
                             </span>
                         </h3>
                         <p><strong><i class="fa-solid fa-user"></i> Recipient:</strong> <?= sanitize($parcel['recipient_name']) ?> (<?= sanitize($parcel['recipient_phone'] ?? 'N/A') ?>)</p>
-                        <p><strong><i class="fa-solid fa-location-dot"></i> Address:</strong> <?= sanitize($parcel['delivery_address']) ?></p>
+                        <p>
+                            <strong><i class="fa-solid fa-location-dot"></i> Address:</strong>
+                            <button type="button" class="address-route-trigger" onclick='openParcelRoute(<?= json_encode([
+                                'tracking_number' => $parcel['tracking_number'],
+                                'recipient_name' => $parcel['recipient_name'],
+                                'delivery_address' => $parcel['delivery_address'],
+                                'latitude' => $parcel['latitude'],
+                                'longitude' => $parcel['longitude'],
+                            ], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) ?>)'><?= sanitize($parcel['delivery_address']) ?></button>
+                        </p>
 
                         <div class="action-btns">
                             <?php if ($parcel['status'] === 'pending'): ?>
@@ -569,6 +592,30 @@ $page_title = "Rider Delivery Portal";
                 <?php endforeach; ?>
             <?php endif; ?>
         </div>
+        <!-- All Order Status Card -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title"><i class="fa-solid fa-clipboard-list"></i> Current Order Status (<?= count($all_assigned_parcels) ?>)</h2>
+            </div>
+
+            <?php if (empty($all_assigned_parcels)): ?>
+                <p style="color: #64748b; font-size: 14px; text-align: center; padding: 20px 0;">No current or failed orders to show.</p>
+            <?php else: ?>
+                <div class="order-status-list">
+                    <?php foreach ($all_assigned_parcels as $parcel): ?>
+                        <div class="order-status-item">
+                            <div class="order-status-meta">
+                                <strong><i class="fa-solid fa-barcode"></i> <?= sanitize($parcel['tracking_number']) ?></strong>
+                                <p><?= sanitize($parcel['recipient_name']) ?> · <?= sanitize($parcel['delivery_address']) ?></p>
+                            </div>
+                            <span class="parcel-status parcel-status-<?= sanitize($parcel['status']) ?>">
+                                <?= sanitize(ucwords(str_replace('_', ' ', $parcel['status']))) ?>
+                            </span>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
+        </div>
     </div>
 
     <!-- Proof Photo Capture & Upload Modal -->
@@ -584,13 +631,12 @@ $page_title = "Rider Delivery Portal";
                 <input type="hidden" name="status" value="delivered">
 
                 <p style="font-size: 13px; color: #475569; margin-bottom: 12px;">
-                    Take a photo using your mobile camera or upload an image file from your device.
+                    Take up to 5 photos using your mobile camera or upload image files from your device.
                 </p>
 
                 <div style="margin-bottom: 16px;">
-                    <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">Delivery Proof Photo:</label>
-                    <!-- capture="environment" opens rear camera directly on supported mobile devices -->
-                    <input type="file" name="proof_image" accept="image/*" capture="environment" required style="width: 100%; font-size: 13px; padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px;">
+                    <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">Delivery Proof Photos (1–5):</label>
+                    <input type="file" name="proof_images[]" accept="image/jpeg,image/png,image/webp" capture="environment" multiple required style="width: 100%; font-size: 13px; padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px;">
                 </div>
 
                 <div style="display: flex; justify-content: flex-end; gap: 8px;">
@@ -601,41 +647,218 @@ $page_title = "Rider Delivery Portal";
         </div>
     </div>
 
+    <!-- Single Parcel Route Modal -->
+    <div id="parcelRouteModal" class="modal" aria-hidden="true">
+        <div class="modal-content route-modal-content" role="dialog" aria-modal="true" aria-labelledby="parcel-route-title">
+            <div class="modal-header">
+                <span id="parcel-route-title"><i class="fa-solid fa-route"></i> Route to Delivery Address</span>
+                <button type="button" class="close-modal" onclick="closeParcelRoute()" aria-label="Close route map">&times;</button>
+            </div>
+            <p id="parcel-route-details" style="font-size:13px; color:#475569;"></p>
+            <div id="parcel-route-options" class="route-options" aria-label="Available route options"></div>
+            <div id="parcel-route-map"></div>
+            <p id="parcel-route-status" style="font-size:13px; color:#64748b; margin-top:10px;">Preparing route...</p>
+        </div>
+
+    </div>
+
     <!-- Live GPS Tracking Script -->
     <?php if ($rider && !empty($rider['rider_id'])): ?>
-    <?php if ($nav_parcel): ?>
+    <?php if ($show_delivery_plan): ?>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <?php endif; ?>
     <script>
         const riderId = "<?= sanitize($rider['rider_id']) ?>";
-        <?php if ($nav_parcel): ?>
-        const navParcel = <?= json_encode([
-            'tracking_number' => $nav_parcel['tracking_number'],
-            'recipient_name'  => $nav_parcel['recipient_name'],
-            'delivery_address'=> $nav_parcel['delivery_address'],
-        ], JSON_UNESCAPED_UNICODE) ?>;
-        const navDestination = <?= json_encode($nav_destination, JSON_UNESCAPED_UNICODE) ?>;
+        const riderIsOnline = <?= (($rider['is_online'] ?? 0) == 1) ? 'true' : 'false' ?>;
+        <?php if ($show_delivery_plan): ?>
         const lastKnownGps = <?= json_encode($last_rider_gps, JSON_UNESCAPED_UNICODE) ?>;
 
         let deliveryMap = null;
-        let riderMarker = null;
-        let destMarker = null;
-        let routeLine = null;
-        let lastRouteKey = '';
+        let planLayers = [];
+        let parcelRouteMap = null;
+        let parcelRouteLayers = [];
+        let parcelRouteOptionLayers = [];
+        let currentGps = lastKnownGps ? {
+            lat: parseFloat(lastKnownGps.lat),
+            lng: parseFloat(lastKnownGps.lng)
+        } : null;
+
+        function clearPlanLayers() {
+            if (!deliveryMap) return;
+            planLayers.forEach(layer => deliveryMap.removeLayer(layer));
+            planLayers = [];
+        }
+
+        function validMalaysiaPoint(lat, lng) {
+            return Number.isFinite(lat) && Number.isFinite(lng) && lat >= 0.8 && lat <= 7.5 && lng >= 98.5 && lng <= 119.5;
+        }
+
+        function escapeHtml(value) {
+            const element = document.createElement('div');
+            element.textContent = value == null ? '' : String(value);
+            return element.innerHTML;
+        }
+
+        function clearParcelRouteLayers() {
+            if (!parcelRouteMap) return;
+            parcelRouteLayers.forEach(layer => parcelRouteMap.removeLayer(layer));
+            parcelRouteLayers = [];
+            parcelRouteOptionLayers = [];
+            document.getElementById('parcel-route-options').innerHTML = '';
+        }
+
+        function showParcelRouteOption(routes, selectedIndex, status) {
+            parcelRouteOptionLayers.forEach(layer => {
+                const isSelected = layer.routeIndex === selectedIndex;
+                layer.setStyle({
+                    color: isSelected ? '#0284c7' : '#94a3b8',
+                    weight: isSelected ? 5 : 4,
+                    opacity: isSelected ? 0.9 : 0.55
+                });
+                if (isSelected) layer.bringToFront();
+            });
+
+            const route = routes[selectedIndex];
+            status.textContent = `${selectedIndex === 0 ? 'Main route' : `Backup route ${selectedIndex}`}: ${Number(route.distance_km).toFixed(1)} km · about ${route.duration_min} min`;
+            document.querySelectorAll('#parcel-route-options .route-option').forEach((button, index) => {
+                button.classList.toggle('is-active', index === selectedIndex);
+                button.setAttribute('aria-pressed', index === selectedIndex ? 'true' : 'false');
+            });
+        }
+
+        function initParcelRouteMap() {
+            if (parcelRouteMap) return;
+            parcelRouteMap = L.map('parcel-route-map');
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19,
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(parcelRouteMap);
+        }
+
+        async function getRouteStartPoint() {
+            if (currentGps && validMalaysiaPoint(currentGps.lat, currentGps.lng)) return currentGps;
+
+            if (!('geolocation' in navigator)) return lastKnownGps;
+
+            return new Promise(resolve => {
+                navigator.geolocation.getCurrentPosition(position => {
+                    const point = { lat: position.coords.latitude, lng: position.coords.longitude };
+                    if (validMalaysiaPoint(point.lat, point.lng)) {
+                        currentGps = point;
+                        resolve(point);
+                    } else {
+                        resolve(lastKnownGps);
+                    }
+                }, () => resolve(lastKnownGps), {
+                    enableHighAccuracy: true,
+                    timeout: 6000,
+                    maximumAge: 10000
+                });
+            });
+        }
+
+        async function openParcelRoute(parcel) {
+            const destination = { lat: parseFloat(parcel.latitude), lng: parseFloat(parcel.longitude) };
+            const modal = document.getElementById('parcelRouteModal');
+            const status = document.getElementById('parcel-route-status');
+
+            document.getElementById('parcel-route-details').textContent =
+                `${parcel.tracking_number || 'Parcel'} · ${parcel.recipient_name || ''} · ${parcel.delivery_address || ''}`;
+            modal.style.display = 'flex';
+            modal.setAttribute('aria-hidden', 'false');
+            initParcelRouteMap();
+            clearParcelRouteLayers();
+            setTimeout(() => parcelRouteMap.invalidateSize(), 150);
+
+            if (!validMalaysiaPoint(destination.lat, destination.lng)) {
+                status.textContent = 'This parcel does not have a valid saved map location yet.';
+                return;
+            }
+
+            // Always show the saved delivery location first. This keeps the map
+            // useful while the browser asks for a fresh GPS location.
+            parcelRouteMap.setView([destination.lat, destination.lng], 15);
+            const destinationMarker = L.marker([destination.lat, destination.lng])
+                .addTo(parcelRouteMap)
+                .bindPopup(`<b>${escapeHtml(parcel.tracking_number || 'Delivery address')}</b><br>${escapeHtml(parcel.delivery_address)}`)
+                .openPopup();
+            parcelRouteLayers.push(destinationMarker);
+
+            status.textContent = 'Getting your current location and planning the driving route...';
+            const start = await getRouteStartPoint();
+            if (!start || !validMalaysiaPoint(start.lat, start.lng)) {
+                status.textContent = 'Unable to get your location. Please allow location access and try again.';
+                return;
+            }
+
+            const riderMarker = L.circleMarker([start.lat, start.lng], {
+                radius: 8, color: '#ffffff', weight: 2, fillColor: '#22c55e', fillOpacity: 1
+            }).addTo(parcelRouteMap).bindPopup('Your location');
+            parcelRouteLayers.push(riderMarker);
+
+            let routes = [{
+                distance_km: null,
+                duration_min: null,
+                coordinates: [[start.lat, start.lng], [destination.lat, destination.lng]]
+            }];
+            try {
+                const params = new URLSearchParams({
+                    start_lat: start.lat, start_lng: start.lng,
+                    end_lat: destination.lat, end_lng: destination.lng
+                });
+                const response = await fetch(`../api/get_route.php?${params.toString()}`, { credentials: 'same-origin' });
+                const result = await response.json();
+                if (result.status !== 'success' || !Array.isArray(result.data?.coordinates) || result.data.coordinates.length < 2) {
+                    throw new Error(result.message || 'Unable to plan driving route.');
+                }
+                routes = Array.isArray(result.data.routes) && result.data.routes.length
+                    ? result.data.routes
+                    : [result.data];
+                routes = routes.filter(route => Array.isArray(route.coordinates) && route.coordinates.length >= 2);
+                if (!routes.length) throw new Error('Unable to plan driving route.');
+            } catch (error) {
+                status.textContent = `${error.message || 'Driving route unavailable.'} Showing the destination direction instead.`;
+            }
+
+            const routeOptions = document.getElementById('parcel-route-options');
+            routes.forEach((route, index) => {
+                const routeLine = L.polyline(route.coordinates, {
+                    color: index === 0 ? '#0284c7' : '#94a3b8', weight: index === 0 ? 5 : 4, opacity: index === 0 ? 0.9 : 0.55
+                }).addTo(parcelRouteMap);
+                routeLine.routeIndex = index;
+                routeLine.on('click', () => showParcelRouteOption(routes, index, status));
+                parcelRouteOptionLayers.push(routeLine);
+
+                if (routes.length > 1) {
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = `route-option${index === 0 ? ' is-active' : ''}`;
+                    button.innerHTML = `<strong>${index === 0 ? 'Main route' : `Backup route ${index}`}</strong><br>${Number(route.distance_km).toFixed(1)} km · ${route.duration_min} min`;
+                    button.setAttribute('aria-pressed', index === 0 ? 'true' : 'false');
+                    button.addEventListener('click', () => showParcelRouteOption(routes, index, status));
+                    routeOptions.appendChild(button);
+                }
+            });
+            parcelRouteLayers.push(...parcelRouteOptionLayers);
+            if (routes[0].distance_km !== null) {
+                showParcelRouteOption(routes, 0, status);
+            }
+            parcelRouteMap.fitBounds(L.latLngBounds(routes.flatMap(route => route.coordinates)), { padding: [36, 36] });
+        }
+
+        function closeParcelRoute() {
+            const modal = document.getElementById('parcelRouteModal');
+            modal.style.display = 'none';
+            modal.setAttribute('aria-hidden', 'true');
+        }
 
         function initDeliveryMap() {
-            const malaysiaBounds = [[0.85, 99.60], [7.40, 119.30]];
             deliveryMap = L.map('delivery-map');
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 maxZoom: 19,
                 attribution: '© OpenStreetMap contributors'
             }).addTo(deliveryMap);
-
-            if (navDestination?.lat != null && navDestination?.lng != null) {
-                deliveryMap.setView([navDestination.lat, navDestination.lng], 13);
-            } else {
-                deliveryMap.fitBounds(malaysiaBounds, { padding: [18, 18] });
-            }
+            deliveryMap.fitBounds([[0.85, 99.60], [7.40, 119.30]], { padding: [18, 18] });
 
             setTimeout(() => {
                 if (deliveryMap) {
@@ -644,148 +867,140 @@ $page_title = "Rider Delivery Portal";
             }, 250);
         }
 
-        function getDestinationCoords() {
-            if (!navDestination || navDestination.lat == null || navDestination.lng == null) {
-                return null;
-            }
-            return {
-                lat: parseFloat(navDestination.lat),
-                lng: parseFloat(navDestination.lng)
-            };
-        }
+        async function loadPlannedDeliveryRoute(startLat = null, startLng = null) {
+            if (!deliveryMap) return;
 
-        function showDestinationOnly(statusText) {
-            const destination = getDestinationCoords();
-            if (!destination || !deliveryMap) {
-                return;
-            }
-
-            if (destMarker) {
-                destMarker.setLatLng([destination.lat, destination.lng]);
-            } else {
-                destMarker = L.circleMarker([destination.lat, destination.lng], {
-                    radius: 8,
-                    color: '#ffffff',
-                    weight: 2,
-                    fillColor: '#ef4444',
-                    fillOpacity: 1
-                }).addTo(deliveryMap).bindPopup(`Recipient: ${navParcel.recipient_name}`);
-            }
-
-            deliveryMap.setView([destination.lat, destination.lng], 14);
-            document.getElementById('route-status-text').textContent = statusText;
-        }
-
-        async function drawDeliveryRoute(startLat, startLng, destLat, destLng) {
-            if (!deliveryMap) {
-                return;
-            }
-
-            const routeKey = `${startLat.toFixed(5)},${startLng.toFixed(5)}-${destLat.toFixed(5)},${destLng.toFixed(5)}`;
-            if (routeKey === lastRouteKey && routeLine) {
-                if (riderMarker) {
-                    riderMarker.setLatLng([startLat, startLng]);
-                }
-                return;
-            }
-            lastRouteKey = routeKey;
-
-            const params = new URLSearchParams({
-                start_lat: startLat,
-                start_lng: startLng,
-                end_lat: destLat,
-                end_lng: destLng
-            });
-
-            let coords = [[startLat, startLng], [destLat, destLng]];
-            let statusText = 'Showing estimated straight-line route.';
+            document.getElementById('route-status-text').textContent = 'Building planned delivery route...';
+            document.getElementById('plan-stops').innerHTML = '';
+            clearPlanLayers();
 
             try {
-                const response = await fetch(`../api/get_route.php?${params.toString()}`, {
+                const response = await fetch('../api/get_rider_delivery_plan.php', {
                     credentials: 'same-origin'
                 });
-                const result = await response.json();
-                if (result.status === 'success' && result.data && Array.isArray(result.data.coordinates) && result.data.coordinates.length > 1) {
-                    coords = result.data.coordinates;
-                    statusText = `Planned route: ${result.data.distance_km} km (~${result.data.duration_min} mins)`;
-                } else if (result.message) {
-                    statusText = `Straight-line route shown (${result.message}).`;
+                const payload = await response.json();
+
+                if (payload.status !== 'success') {
+                    throw new Error(payload.message || 'Unable to load delivery plan.');
                 }
+
+                const plan = payload.data;
+                if (!plan.stops.length) {
+                    document.getElementById('route-status-text').textContent = plan.total_active
+                        ? 'Active parcels need saved map coordinates before a planned route can be shown.'
+                        : 'No active parcels assigned.';
+                    return;
+                }
+
+                const bounds = L.latLngBounds([]);
+                const start = (startLat != null && startLng != null)
+                    ? { lat: startLat, lng: startLng }
+                    : (plan.start || null);
+
+                if (start) {
+                    const riderMarker = L.circleMarker([start.lat, start.lng], {
+                        radius: 8,
+                        color: '#ffffff',
+                        weight: 2,
+                        fillColor: '#22c55e',
+                        fillOpacity: 1
+                    }).addTo(deliveryMap).bindPopup('Your location');
+                    planLayers.push(riderMarker);
+                    bounds.extend([start.lat, start.lng]);
+                }
+
+                plan.stops.forEach(stop => {
+                    const icon = L.divIcon({
+                        className: 'route-number-marker',
+                        html: `<div style="width:30px;height:30px;border-radius:50%;background:#ef4444;color:#fff;display:grid;place-items:center;border:3px solid #fff;font-weight:700;box-shadow:0 2px 7px rgba(0,0,0,.25)">${stop.sequence}</div>`,
+                        iconSize: [30, 30],
+                        iconAnchor: [15, 15]
+                    });
+                    const marker = L.marker([stop.latitude, stop.longitude], { icon })
+                        .addTo(deliveryMap)
+                        .bindPopup(`<b>${stop.sequence}. ${stop.tracking_number}</b><br>${stop.recipient_name}<br>${stop.delivery_address}`);
+                    planLayers.push(marker);
+                    bounds.extend([stop.latitude, stop.longitude]);
+
+                    const chip = document.createElement('span');
+                    chip.className = 'plan-stop-chip';
+                    chip.textContent = `${stop.sequence}. ${stop.tracking_number}`;
+                    document.getElementById('plan-stops').appendChild(chip);
+                });
+
+                const points = plan.stops.map(stop => ({ lat: stop.latitude, lng: stop.longitude }));
+                if (start) {
+                    points.unshift(start);
+                }
+
+                let totalKm = 0;
+                for (let i = 0; i < points.length - 1; i++) {
+                    const params = new URLSearchParams({
+                        start_lat: points[i].lat,
+                        start_lng: points[i].lng,
+                        end_lat: points[i + 1].lat,
+                        end_lng: points[i + 1].lng
+                    });
+
+                    let segmentCoords = [[points[i].lat, points[i].lng], [points[i + 1].lat, points[i + 1].lng]];
+
+                    try {
+                        const segmentResponse = await fetch(`../api/get_route.php?${params.toString()}`, {
+                            credentials: 'same-origin'
+                        });
+                        const segment = await segmentResponse.json();
+                        if (segment.status === 'success' && segment.data?.coordinates?.length > 1) {
+                            segmentCoords = segment.data.coordinates;
+                            totalKm += Number(segment.data.distance_km || 0);
+                        }
+                    } catch (error) {
+                        console.warn('Route segment lookup failed:', error);
+                    }
+
+                    const line = L.polyline(segmentCoords, {
+                        color: '#0284c7',
+                        weight: 5,
+                        opacity: 0.85
+                    }).addTo(deliveryMap);
+                    planLayers.push(line);
+                }
+
+                if (bounds.isValid()) {
+                    deliveryMap.fitBounds(bounds, { padding: [36, 36] });
+                }
+
+                document.getElementById('route-status-text').textContent =
+                    `${plan.stops.length} stop(s) in suggested order` +
+                    (totalKm ? ` · ${totalKm.toFixed(1)} km by road` : '') +
+                    (plan.unlocated_count ? ` · ${plan.unlocated_count} parcel(s) missing map coordinates` : '');
             } catch (error) {
-                console.warn('Route lookup failed:', error);
+                document.getElementById('route-status-text').textContent =
+                    error.message || 'Unable to load planned delivery route.';
             }
-
-            if (routeLine) {
-                deliveryMap.removeLayer(routeLine);
-            }
-            routeLine = L.polyline(coords, {
-                color: '#0284c7',
-                weight: 6,
-                opacity: 0.85
-            }).addTo(deliveryMap);
-
-            if (riderMarker) {
-                riderMarker.setLatLng([startLat, startLng]);
-            } else {
-                riderMarker = L.circleMarker([startLat, startLng], {
-                    radius: 8,
-                    color: '#ffffff',
-                    weight: 2,
-                    fillColor: '#22c55e',
-                    fillOpacity: 1
-                }).addTo(deliveryMap).bindPopup('Your location');
-            }
-
-            if (destMarker) {
-                destMarker.setLatLng([destLat, destLng]);
-            } else {
-                destMarker = L.circleMarker([destLat, destLng], {
-                    radius: 8,
-                    color: '#ffffff',
-                    weight: 2,
-                    fillColor: '#ef4444',
-                    fillOpacity: 1
-                }).addTo(deliveryMap).bindPopup(`Recipient: ${navParcel.recipient_name}`);
-            }
-
-            deliveryMap.fitBounds(routeLine.getBounds(), { padding: [30, 30] });
-            document.getElementById('route-status-text').textContent = statusText;
-        }
-
-        async function refreshDeliveryMap(startLat, startLng) {
-            const destination = getDestinationCoords();
-            if (!destination) {
-                document.getElementById('route-status-text').textContent = 'Unable to locate delivery address. Please contact admin to update the parcel address.';
-                return;
-            }
-
-            await drawDeliveryRoute(startLat, startLng, destination.lat, destination.lng);
         }
 
         function bootDeliveryMap() {
             initDeliveryMap();
-
-            const destination = getDestinationCoords();
-            if (!destination) {
-                document.getElementById('route-status-text').textContent = 'Unable to locate delivery address. Please contact admin to update the parcel address.';
-                return;
+            if (currentGps) {
+                loadPlannedDeliveryRoute(currentGps.lat, currentGps.lng);
+            } else {
+                loadPlannedDeliveryRoute();
             }
-
-            if (lastKnownGps && lastKnownGps.lat != null && lastKnownGps.lng != null) {
-                refreshDeliveryMap(parseFloat(lastKnownGps.lat), parseFloat(lastKnownGps.lng));
-                return;
-            }
-
-            showDestinationOnly('Recipient location loaded. Allow GPS to draw your route line.');
         }
 
         document.addEventListener('DOMContentLoaded', bootDeliveryMap);
         <?php endif; ?>
 
         function sendGPSLocation() {
+            if (!riderIsOnline) {
+                return;
+            }
+
             if (!("geolocation" in navigator)) {
-                <?php if ($nav_parcel): ?>
-                showDestinationOnly('Geolocation is not supported in this browser.');
+                <?php if ($show_delivery_plan): ?>
+                if (!currentGps) {
+                    loadPlannedDeliveryRoute();
+                }
                 <?php endif; ?>
                 return;
             }
@@ -793,6 +1008,8 @@ $page_title = "Rider Delivery Portal";
             navigator.geolocation.getCurrentPosition(async position => {
                 const lat = position.coords.latitude;
                 const lng = position.coords.longitude;
+                currentGps = { lat, lng };
+
                 const formData = new FormData();
                 formData.append('rider_id', riderId);
                 formData.append('latitude', lat);
@@ -803,14 +1020,14 @@ $page_title = "Rider Delivery Portal";
                     body: formData
                 }).catch(err => console.error("GPS location ping failed:", err));
 
-                <?php if ($nav_parcel): ?>
-                await refreshDeliveryMap(lat, lng);
+                <?php if ($show_delivery_plan): ?>
+                await loadPlannedDeliveryRoute(lat, lng);
                 <?php endif; ?>
             }, err => {
                 console.warn("Geolocation warning:", err.message);
-                <?php if ($nav_parcel): ?>
-                if (!routeLine) {
-                    showDestinationOnly('Allow location access to draw your route line.');
+                <?php if ($show_delivery_plan): ?>
+                if (!currentGps) {
+                    loadPlannedDeliveryRoute();
                 }
                 <?php endif; ?>
             }, {
@@ -840,9 +1057,12 @@ $page_title = "Rider Delivery Portal";
             if (event.target === modal) {
                 modal.style.display = 'none';
             }
+
+            if (event.target === document.getElementById('parcelRouteModal')) {
+                closeParcelRoute();
+            }
         }
     </script>
 
-    <?php require __DIR__ . '/../includes/rider_presence_script.php'; ?>
 </body>
 </html>
