@@ -1,5 +1,3 @@
-CREATE DATABASE IF NOT EXISTS `delivery_db` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE `delivery_db`;
 
 -- ========================================================
 -- 1. SCHEMAS (TABLE CREATION)

@@ -234,6 +234,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .input-wrapper i { color: #087e6b; }
         .btn-submit { border-radius: 9px; background: #087e6b; box-shadow: 0 6px 15px rgba(8, 126, 107, .18); }
         .btn-submit:hover { background: #056454; }
+
+        .demo-accounts {
+            margin-top: 22px;
+            padding-top: 18px;
+            border-top: 1px solid #e5e0d5;
+        }
+        .demo-accounts h2 {
+            margin: 0 0 10px;
+            color: #38524d;
+            font-size: .82rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+        }
+        .account-detail {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 10px 12px;
+            border: 1px solid #d9e3df;
+            border-radius: 9px;
+            background: #f5faf7;
+            color: #38524d;
+            font-size: .81rem;
+        }
+        .account-detail + .account-detail { margin-top: 8px; }
+        .account-role { font-weight: 700; color: #087e6b; white-space: nowrap; }
+        .account-credentials { text-align: right; line-height: 1.5; }
     </style>
 </head>
 <body>
@@ -286,6 +315,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <i class="fa-solid fa-right-to-bracket"></i> Log In
             </button>
         </form>
+
+        <section class="demo-accounts" aria-label="Test login accounts">
+            <h2>Test Login Accounts</h2>
+            <div class="account-detail">
+                <span class="account-role"><i class="fa-solid fa-user-shield"></i> Admin</span>
+                <span class="account-credentials">admin@courier.com<br>Password: admin123</span>
+            </div>
+            <div class="account-detail">
+                <span class="account-role"><i class="fa-solid fa-motorcycle"></i> Rider</span>
+                <span class="account-credentials">jie@gmail.com<br>Password: jie123</span>
+            </div>
+        </section>
     </div>
 
 </body>

@@ -1,21 +1,14 @@
 <?php
 $page_title = "Parcel Management";
 
+require_once __DIR__ . '/../includes/functions.php';
+require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/http_client.php';
 require_once __DIR__ . '/../config/services.php';
 
 // Role & Database Connection Checks
-if (function_exists('require_role')) {
-    require_role('admin');
-}
-
-if (function_exists('get_db_connection')) {
-    $db = get_db_connection();
-} else {
-    $db = new PDO("mysql:host=localhost;dbname=delivery_db;charset=utf8mb4", "root", "123qwe");
-    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-}
+require_role('admin');
+$db = get_db_connection();
 
 $ors_api_key = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImE3YWQxMDdlOTA1YjQwM2JiYjAzNmJjZjg0MTQ5NWNhIiwiaCI6Im11cm11cjY0In0=';
 $message = '';

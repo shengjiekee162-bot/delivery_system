@@ -1,8 +1,8 @@
 <?php
 define('DB_HOST', 'localhost');
-define('DB_NAME', 'delivery_db');
-define('DB_USER', 'root');
-define('DB_PASS', '123qwe');
+define('DB_NAME', 'synergy1_keeshenjie_delivery_system');
+define('DB_USER', 'synergy1_shaoxi');
+define('DB_PASS', 'p07e&61#5e9^c]Y}');
 
 function get_db_connection() {
     static $pdo = null;

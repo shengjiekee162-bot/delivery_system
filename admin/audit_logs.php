@@ -1,18 +1,12 @@
 <?php
 $page_title = "Audit Logs";
 
-// Role & Database Connection Checks
-if (function_exists('require_role')) {
-    require_role('admin');
-}
+require_once __DIR__ . '/../includes/functions.php';
+require_once __DIR__ . '/../includes/auth.php';
 
-if (function_exists('get_db_connection')) {
-    $db = get_db_connection();
-} else {
-    $db = new PDO("mysql:host=localhost;dbname=delivery_db;charset=utf8mb4", "root", "123qwe");
-    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-}
+// Role & Database Connection Checks
+require_role('admin');
+$db = get_db_connection();
 
 $search_query = trim($_GET['search'] ?? '');
 $logs = [];
