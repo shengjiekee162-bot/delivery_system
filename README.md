@@ -8,6 +8,7 @@
 ![MySQL](https://img.shields.io/badge/MySQL-5.7%2B-4479A1?logo=mysql&logoColor=white)
 ![Leaflet](https://img.shields.io/badge/Maps-Leaflet-199900?logo=leaflet&logoColor=white)
 ![Responsive](https://img.shields.io/badge/UI-Responsive-0F8A78)
+![License](https://img.shields.io/badge/License-MIT-green.svg)
 
 Create and assign parcels, manage delivery riders, monitor live locations, visualize routes, and retain delivery history from one portal.
 
@@ -131,6 +132,34 @@ delivery_system/
 - Restrict write access to `uploads/` and validate uploaded file types on the server.
 - Use HTTPS in production, especially for authentication and browser geolocation.
 - Verify GPS, maps, routes, uploads, and permissions in the actual hosted environment.
+
+## 📄 License
+
+This project is licensed under the **MIT License**. You may use, modify, and distribute the project for personal, educational, or commercial purposes, provided that the original copyright and license notice are retained.
+
+```text
+MIT License
+
+Copyright (c) 2026 Parcel Delivery System
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ---
 
