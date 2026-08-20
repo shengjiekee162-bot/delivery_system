@@ -324,7 +324,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </div>
             <div class="account-detail">
                 <span class="account-role"><i class="fa-solid fa-motorcycle"></i> Rider</span>
-                <span class="account-credentials">jie@gmail.com<br>Password: jie123</span>
+                <span class="account-credentials">kee@gmail.com<br>Password: kee123</span>
             </div>
         </section>
     </div>

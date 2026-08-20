@@ -15,9 +15,9 @@ if (!function_exists('get_db_connection')) {
 
         if ($db === null) {
             $host     = 'localhost';
-            $dbname   = 'synergy1_keeshenjie_delivery_system';
-            $username = 'synergy1_shaoxi';
-            $password = 'p07e&61#5e9^c]Y}'; // Your MySQL Password
+            $dbname   = DB_NAME;
+            $username = DB_USER;
+            $password = DB_PASS; // Your MySQL Password
 
             try {
                 $db = new PDO("mysql:host={$host};dbname={$dbname};charset=utf8mb4", $username, $password);

@@ -1,0 +1,15 @@
+# Local configuration containing database credentials
+/config/db.local.php
+
+# Local release archives
+/delivery_system.zip
+
+# Runtime uploads and temporary files
+/uploads/*
+!/uploads/.gitkeep
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
